@@ -26,6 +26,13 @@ Fix 1.3.2 (баг старта и «висящего» ресинка):
 #include "logging.h"
 
 enum CsState { CS_IDLE, CS_HOLD, CS_SET, CS_WAIT, CS_VERIFY, CS_EXIT };
+
+// Аппаратная задержка цепочки делителя и счётчиков (мс).
+// Компенсирует время прохождения сигнала от момента вызова pinsDividerRelease() 
+// до фактического старта счётчиков и появления первого фронта меандра.
+// Подбирается экспериментально: старая версия уверенно держала 0..1 мс при компенсации ~240 мс.
+#define CSYNC_HW_DELAY_MS 240
+
 static CsState  csState = CS_IDLE;
 static bool     csPending = false;
 static uint32_t csT = 0;
@@ -283,6 +290,7 @@ void clockSyncTick() {
     case CS_HOLD:
       if (millis() - csT >= 150) { csSetCounters(); csState = CS_WAIT; }
       break;
+    
     case CS_WAIT: {
       uint64_t now = epochMsNow();
       /* FIX 1.3.2: скачок системного времени (SNTP) — прервать и повторить */
