@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-C3 Clock Panel</title>
+<style>
+:root{--bg:#101418;--card:#1b232b;--acc:#4fc3f7;--txt:#e0e6ed;--mut:#8fa1b3}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--txt)}
+header{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;background:var(--card)}
+h1{font-size:17px;margin:0}#clock{font-size:20px;font-weight:600;color:var(--acc)}
+nav{display:flex;gap:6px;padding:8px 16px;background:var(--card);border-top:1px solid #000;flex-wrap:wrap}
+nav button{padding:8px 14px;border:0;border-radius:6px;background:#26313b;color:var(--txt);cursor:pointer}
+nav button.on{background:var(--acc);color:#06222e}
+main{padding:16px;max-width:960px;margin:0 auto}
+section{background:var(--card);border-radius:10px;padding:14px;margin-bottom:14px}
+section.hide{display:none}
+h2{margin:0 0 10px;font-size:15px;color:var(--acc)}h3{margin:12px 0 6px;font-size:13px;color:var(--mut)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+button{cursor:pointer;background:#26313b;color:var(--txt);border:0;border-radius:6px;padding:7px 12px}
+button.pri{background:var(--acc);color:#06222e}
+button:disabled{opacity:.5;cursor:default}
+input{padding:7px 9px;border-radius:6px;border:1px solid #33404d;background:#0f151b;color:var(--txt)}
+input[type=number]{width:90px}
+table{width:100%;border-collapse:collapse}td,th{padding:5px 8px;border-bottom:1px solid #2a3540;text-align:left;font-size:13px}
+.mut{color:var(--mut);font-size:12px}.ok{color:#22c55e}.err{color:#ef4444}
+pre{background:#0c1116;padding:10px;border-radius:8px;max-height:280px;overflow:auto;font-size:12px;white-space:pre-wrap}
+.bar{height:8px;background:#26313b;border-radius:4px;overflow:hidden;margin:4px 0}.bar>div{height:100%;background:var(--acc);width:0%;transition:width .2s}
+.hide{display:none}
+.chip{display:inline-block;padding:2px 8px;border-radius:10px;background:#26313b;font-size:12px}
+</style>
+</head>
+<body>
+<header><h1>⏱ ESP32-C3 Clock</h1><div id="clock">--:--:--</div></header>
+<nav>
+<button class="on" data-t="ctl">Управление</button>
+<button data-t="wifi">WiFi</button>
+<button data-t="files">Файлы</button>
+<button data-t="sys">Система</button>
+<button data-t="cal">Калибровка</button>
+<button data-t="bright">Яркость</button>
+</nav>
+<main>
+
+<section id="ctl">
+<h2>Сигнальные выходы (импульс)</h2>
+<div class="row"><label>Длительность, мс <input id="pulseMs" type="number" value="20"></label></div>
+<div class="row" id="pulseBtns"></div>
+<h2>Voltage_offset_control (ШИМ GPIO0)</h2>
+<div class="row"><input id="pwm" type="range" min="0" max="100" value="50" style="flex:1"><span id="pwmVal" class="chip">50%</span><button class="pri" id="pwmApply">Применить</button></div>
+<div class="row mut" id="pwmInfo"></div>
+</section>
+
+<section id="wifi" class="hide">
+<h2>Статус</h2><div id="wifiStatus" class="mut">...</div>
+<h3>Доступные сети</h3><div class="row"><button id="scanBtn">Сканировать</button></div><div id="nets"></div>
+<h3>Добавить / обновить сеть</h3>
+<div class="row"><input id="ssid" placeholder="SSID" style="flex:1"><input id="pass" placeholder="Пароль" style="flex:1"><button class="pri" id="saveWifi">Сохранить</button></div>
+<div class="mut">После сохранения устройство перезагрузится.</div>
+</section>
+
+<section id="files" class="hide">
+<h2>Файлы LittleFS</h2>
+<div class="row"><span class="chip" id="curDir">/</span><button id="dirRoot">/</button><button id="dirCalib">/calib</button><button id="dirUp">↑ вверх</button><button id="dirRefresh">Обновить</button></div>
+<table><thead><tr><th>Имя</th><th>Размер</th><th>Действия</th></tr></thead><tbody id="filesTbl"></tbody></table>
+<h3>Просмотр файла</h3>
+<pre id="fileView" class="hide"></pre>
+<h3>Загрузить файл (в текущую папку)</h3>
+<form id="upForm"><div class="row"><input type="file" id="upFile"><button class="pri" type="submit">Загрузить</button><span id="upMsg" class="mut"></span></div></form>
+</section>
+
+<section id="sys" class="hide">
+<h2>Информация</h2><table id="sysTbl"></table>
+<h3>Время</h3>
+<div class="row"><label>Смещение UTC, ч <input id="tz" type="number" step="0.25"></label><button class="pri" id="tzSave">Сохранить</button></div>
+<div class="row"><button id="logBtn">Показать лог (sys_log.txt)</button></div>
+<pre id="log" class="hide"></pre>
+<h3>Обновление прошивки</h3>
+<form id="otaForm"><div class="row"><input type="file" id="otaFile" accept=".bin"><button class="pri" id="otaSubmit" type="submit">Прошить</button><span id="otaMsg" class="mut"></span></div></form>
+<div class="bar hide" id="otaBarWrap"><div id="otaBar"></div></div>
+<div class="row mut" id="otaState"></div>
+<h3>Служебное</h3>
+<div class="row"><button id="delUi">Удалить index.html</button><button id="reboot">Перезагрузить ESP32</button></div>
+</section>
+
+<section id="cal" class="hide">
+<h2>Состояние</h2>
+<div class="row"><span>Этап: <b id="calState">idle</b></span><span>Точек: <b id="calPts">0/0</b></span><span>ETA: <b id="calEta">—</b></span><span>Offset: <b id="calOff">—</b> мА</span><span>Уставка: <b id="calSet">—</b>%</span><span id="calSaved" class="mut"></span></div>
+<div class="bar"><div id="calBar"></div></div>
+<div class="row mut" id="calLive"></div>
+<div class="row"><button class="pri" id="calStart">Старт</button><button id="calPause">Пауза</button><button id="calResume">Продолжить</button><button id="calAbort">Стоп/Abort</button></div>
+<h3>Параметры</h3>
+<div class="row"><label>Цель, мА <input id="pTarget" type="number" step="0.1" value="10"></label><label>I min, мА <input id="pImin" type="number" step="0.1" value="0.5"></label><label>Грубый шаг, % <input id="pCoarse" type="number" value="10"></label><label>Точный шаг, % <input id="pFine" type="number" step="0.1" value="0.1"></label></div>
+<div class="row"><label>Settle грубо, мс <input id="pCSet" type="number" value="250"></label><label>Накопл. грубо, мс <input id="pCAcc" type="number" value="1500"></label><label>Settle точно, мс <input id="pFSet" type="number" value="200"></label><label>Накопл. точно, мс <input id="pFAcc" type="number" value="800"></label><label>Уставка, мА/сегм <input id="pISet" type="number" step="0.1" value="1.4"></label></div>
+<h3>Точки в реальном времени</h3>
+<pre id="calLivePts" class="hide"></pre>
+<h3>Результат</h3>
+<div class="row"><button id="calResult">Показать результат</button></div>
+<div class="row mut" id="calFlags"></div>
+<pre id="calOut" class="hide"></pre>
+<h3>Сохранение</h3>
+<div class="row"><label>Метка <input id="calLabel" value="curve"></label><button class="pri" id="calSave">Сохранить</button><button class="pri" id="calApply">Применить</button></div>
+<h3>Профили (/calib/)</h3>
+<div class="row"><button id="calList">Обновить список</button></div>
+<table><thead><tr><th>Файл</th><th>Размер</th><th>Действия</th></tr></thead><tbody id="calTbl"></tbody></table>
+</section>
+
+<section id="bright" class="hide">
+<h2>Авто-яркость</h2>
+<div class="row"><button id="bAuto" class="pri">AUTO</button><button id="bMan">MANUAL</button><span id="bState" class="chip"></span></div>
+<div class="row mut" id="bLive"></div>
+<h3>Ручной режим</h3>
+<div class="row"><input id="bPct" type="range" min="0" max="100" value="50" style="flex:1"><span id="bPctVal" class="chip">50%</span><button class="pri" id="bPctApply">Применить</button></div>
+<h3>Карта lux→mA/сегмент (трим)</h3>
+<div class="row">
+<label>lux min <input id="bLuxMin" type="number" step="0.1" value="0.7"></label>
+<label>lux max <input id="bLuxMax" type="number" step="10" value="500"></label>
+<label>mA min <input id="bMaMin" type="number" step="0.05" value="0.1"></label>
+<label>mA max <input id="bMaMax" type="number" step="0.1" value="2"></label>
+</div>
+<div class="row">
+<label style="flex:1">gamma <input id="bGamma" type="range" min="0.2" max="3" step="0.05" value="1" style="width:100%"></label>
+<span id="bGammaVal" class="chip">1.00</span>
+</div>
+<div class="row"><button class="pri" id="bSave">Сохранить трим</button><button id="bReload">Перечитать кривую</button></div>
+<div class="row mut">gamma=1 — кривая точно через опорные точки; &gt;1 — круче, &lt;1 — положе. Потолок тока — автоматический (0% ШИМ или target кривой).</div>
+</section>
+
+</main>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const jget=u=>fetch(u,{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();});
+const jpost=(u,o)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)}).then(r=>r.json().catch(()=>({})));
+/* FIX: не перезаписывать поле, в котором сейчас работает пользователь */
+function setVal(id,v){const el=$(id);if(el&&document.activeElement!==el)el.value=v;}
+let curDir='/';
+
+function showTab(t){
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  ['ctl','wifi','files','sys','cal','bright'].forEach(id=>$(id).classList.toggle('hide',id!==t));
+  if(t==='files')loadFiles(curDir);
+  if(t==='sys')pollSys();
+  if(t==='cal'){pollCal();pollPoints();loadCal();}
+  if(t==='bright')pollBright(true);
+}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.t));
+
+/* ---------- Управление ---------- */
+["Reset_clock_divider","Reset_clock_counter","Set_Second_counter","Set_Minute_counter","Set_Hour_counter"].forEach(n=>{
+  const b=document.createElement('button');b.textContent=n;
+  b.onclick=()=>fetch('/api/pulse?name='+encodeURIComponent(n)+'&ms='+(+$('pulseMs').value||20));
+  $('pulseBtns').appendChild(b);});
+$('pwm').oninput=e=>$('pwmVal').textContent=e.target.value+'%';
+$('pwmApply').onclick=()=>fetch('/api/pwm?duty='+(+$('pwm').value));
+
+/* ---------- Система ---------- */
+function pollSys(){
+  jget('/api/sysinfo').then(j=>{
+    $('clock').textContent=j.time||'--:--:--';
+    $('wifiStatus').textContent=(j.mode||'?')+' | '+(j.ssid||'—')+' | '+(j.ip||'—')+' | RSSI '+(j.rssi||0);
+    $('pwmInfo').textContent='ШИМ '+j.pwm_pct+'% / '+j.pwm_res+' бит'+(j.pwm_settled?' (установился)':' (установка)')+' | master: '+(j.master?'разрешено':'запрещено'+(j.fault?' ('+j.fault+')':''));
+    if(j.tz!==undefined)setVal('tz',j.tz);   /* FIX: setVal */
+    const row=(k,v)=>'<tr><td style="width:45%;color:var(--mut)">'+k+'</td><td>'+v+'</td></tr>';
+    $('sysTbl').innerHTML=
+      row('Прошивка',j.fw)+
+      row('Heap / flash / sketch',j.heap+' / '+j.flash+' / '+j.sketch)+
+      row('Аптайм',j.uptime_str||j.uptime)+
+      row('UI',j.has_full_ui?'index.html':'fallback')+
+      row('RTC',(j.rtc_found?('есть, T='+j.rtc_temp+'°C'):'нет'))+
+      row('INA226',(j.ina_found?(j.ina_valid?(j.ina_ma.toFixed(1)+' мА, '+j.ina_v.toFixed(2)+' В, '+j.ina_w.toFixed(3)+' Вт'):'нет данных'):'нет'))+
+      row('Шина VBUS',(j.vbus_source||'?')+' / '+(j.rail_status||'?'))+
+      row('BH1750',(j.light_found?(j.light_valid?(j.light_lux.toFixed(1)+' лк'):'нет данных'):'нет'))+
+      /* FIX: возвращён ток сегмента */
+      row('Сегменты / ток сегм.',(j.digit_seg!==undefined?(j.digit_seg+' / эфф '+j.eff_seg):'—')+' / '+(j.i_seg_est!==undefined?(j.i_seg_est.toFixed(2)+' мА'):'—'))+
+      row('Меандр / делитель / двоеточие',(j.meander_edges||0)+' фр. / '+(j.divider_held?'удержан':'свободен')+' / '+(j.colon_on?'ON':'OFF'))+
+      row('Синхронизация / фаза',(j.resync?'ресинк идёт':'ожидание')+' / '+(j.phase_ms||0)+' мс')+
+      row('Авто-яркость',(j.bright_mode===1?'MANUAL':'AUTO')+', кривая: '+(j.bright_curve?'да':'нет')+(j.bright_target_ma!==undefined?', цель '+j.bright_target_ma.toFixed(2)+' мА/сег':''))+
+      row('Безопасность',(j.master?'разрешено':'запрещено')+(j.fault?(' ('+j.fault+')'):''));
+  }).catch(()=>{});
+}
+setInterval(()=>{if(!$('sys').classList.contains('hide')||true){pollSys();}},3000);pollSys();
+$('tzSave').onclick=()=>jpost('/api/set_tz',{tz:+$('tz').value}).then(()=>alert('Сохранено. Перезагрузка…')).catch(()=>alert('Ошибка'));
+$('logBtn').onclick=()=>fetch('/api/view?name='+encodeURIComponent('/sys_log.txt')).then(r=>r.text())
+  .then(t=>{$('log').textContent=t;$('log').classList.remove('hide');}).catch(()=>{$('log').textContent='(лог недоступен)';$('log').classList.remove('hide');});
+$('delUi').onclick=()=>{if(confirm('Удалить index.html?'))fetch('/api/delete_ui').then(()=>location.reload());};
+$('reboot').onclick=()=>{if(confirm('Перезагрузить?'))fetch('/api/restart');};
+
+/* ---------- OTA: прогресс + перезагрузка + ожидание (FIX) ---------- */
+$('otaForm').onsubmit=e=>{
+  e.preventDefault();
+  const f=$('otaFile').files[0];
+  if(!f){$('otaMsg').textContent='выберите .bin';return;}
+  $('otaSubmit').disabled=true;$('otaFile').disabled=true;
+  $('otaBarWrap').classList.remove('hide');$('otaBar').style.width='0%';
+  $('otaMsg').textContent='Загрузка…';$('otaState').textContent='';
+  const fd=new FormData();fd.append('firmware',f);
+  const xhr=new XMLHttpRequest();
+  xhr.open('POST','/api/ota');
+  xhr.upload.onprogress=ev=>{
+    if(ev.lengthComputable){
+      const p=Math.round(ev.loaded/ev.total*100);
+      $('otaBar').style.width=p+'%';
+      $('otaMsg').textContent='Загрузка: '+p+'% ('+Math.round(ev.loaded/1024)+' / '+Math.round(ev.total/1024)+' КБ)';
+    }
+  };
+  xhr.onload=()=>{
+    let j={};try{j=JSON.parse(xhr.responseText);}catch(err){}
+    if(j.status==='ok'){
+      $('otaBar').style.width='100%';
+      $('otaMsg').textContent='Прошито OK. Перезагрузка…';
+      waitReboot();
+    }else{
+      $('otaMsg').textContent='ОШИБКА прошивки';
+      $('otaSubmit').disabled=false;$('otaFile').disabled=false;
+    }
+  };
+  xhr.onerror=()=>{
+    $('otaMsg').textContent='ОШИБКА связи';
+    $('otaSubmit').disabled=false;$('otaFile').disabled=false;
+  };
+  xhr.send(fd);
+};
+function waitReboot(){
+  let tries=0;
+  $('otaState').textContent='Ожидание возврата устройства…';
+  const iv=setInterval(()=>{
+    tries++;
+    $('otaState').textContent='Ожидание возврата устройства… '+ (tries*2)+' c';
+    fetch('/api/versions',{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()).then(j=>{
+      clearInterval(iv);
+      $('otaState').textContent='Устройство на связи, fw '+(j.project||'?')+'. Перезагрузка страницы…';
+      setTimeout(()=>location.reload(),1500);
+    }).catch(()=>{
+      if(tries>45){clearInterval(iv);$('otaState').textContent='Устройство не вернулось за 90 с — проверьте питание/WiFi.';}
+    });
+  },2000);
+}
+
+/* ---------- WiFi ---------- */
+$('scanBtn').onclick=()=>{$('nets').innerHTML='<div class="mut">Сканирую…</div>';
+  jget('/api/scan').then(a=>{$('nets').innerHTML='';
+    (a||[]).forEach(n=>{const d=document.createElement('div');d.className='row';
+      d.innerHTML='<span style="flex:1">'+n.ssid+'</span><span class="mut">'+n.rssi+' dBm</span>';
+      const b=document.createElement('button');b.textContent='выбрать';b.onclick=()=>$('ssid').value=n.ssid;
+      d.appendChild(b);$('nets').appendChild(d);});
+  }).catch(()=>$('nets').innerHTML='<div class="err">Ошибка сканирования</div>');};
+$('saveWifi').onclick=()=>jpost('/api/save_wifi',{ssid:$('ssid').value,password:$('pass').value}).then(()=>alert('Сохранено. Перезагрузка…')).catch(()=>alert('Ошибка'));
+
+/* ---------- Файлы ---------- */
+function loadFiles(dir){
+  curDir=dir||'/';$('curDir').textContent=curDir;$('fileView').classList.add('hide');
+  jget('/api/files?dir='+encodeURIComponent(curDir)).then(a=>{
+    const tb=$('filesTbl');tb.innerHTML='';
+    (a||[]).forEach(f=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td>'+f.name+(f.is_dir?'/':'')+'</td><td>'+(f.is_dir?'':f.size)+'</td><td></td>';
+      const td=tr.children[2];
+      if(f.is_dir){
+        const bo=document.createElement('button');bo.textContent='открыть';bo.onclick=()=>loadFiles(f.name);td.appendChild(bo);
+      }else{
+        const bv=document.createElement('button');bv.textContent='просм.';bv.onclick=()=>viewFile(f.name);td.appendChild(bv);
+        const bs=document.createElement('button');bs.textContent='скач.';bs.onclick=()=>{location.href='/api/download?name='+encodeURIComponent(f.name);};td.appendChild(bs);
+        const bd=document.createElement('button');bd.textContent='удал.';bd.onclick=()=>delFile(f.name);td.appendChild(bd);
+      }
+      tb.appendChild(tr);
+    });
+    if(!(a||[]).length)tb.innerHTML='<tr><td colspan="3" class="mut">пусто</td></tr>';
+  }).catch(()=>{$('filesTbl').innerHTML='<tr><td colspan="3" class="err">Ошибка чтения</td></tr>';});
+}
+/* FIX: просмотр внутри вкладки, а не alert */
+function viewFile(n){
+  fetch('/api/view?name='+encodeURIComponent(n)).then(r=>{if(!r.ok)throw new Error(r.status);return r.text();})
+   .then(t=>{$('fileView').textContent='=== '+n+' ===\n'+t;$('fileView').classList.remove('hide');})
+   .catch(()=>{$('fileView').textContent='(не удалось прочитать '+n+')';$('fileView').classList.remove('hide');});
+}
+function delFile(n){if(confirm('Удалить '+n+' ?'))fetch('/api/delete?name='+encodeURIComponent(n)).then(()=>loadFiles(curDir)).catch(()=>alert('Не удалось удалить'));}
+$('dirRoot').onclick=()=>loadFiles('/');
+$('dirCalib').onclick=()=>loadFiles('/calib');
+$('dirUp').onclick=()=>{let p=curDir.replace(/\/+$/,'').split('/');p.pop();loadFiles(p.join('/')||'/');};
+$('dirRefresh').onclick=()=>loadFiles(curDir);
+$('upForm').onsubmit=e=>{e.preventDefault();const f=$('upFile').files[0];if(!f)return;
+  $('upMsg').textContent='Загрузка…';const fd=new FormData();fd.append('file',f);
+  fetch('/api/upload?dir='+encodeURIComponent(curDir),{method:'POST',body:fd})
+   .then(r=>{if(!r.ok)throw new Error(r.status);$('upMsg').textContent='Готово';loadFiles(curDir);})
+   .catch(()=>$('upMsg').textContent='Ошибка загрузки');};
+
+/* ---------- Калибровка ---------- */
+function pollCal(){
+  jget('/api/calib/status').then(j=>{
+    $('calState').textContent=j.state||'idle';
+    $('calPts').textContent=(j.done||0)+'/'+(j.planned||0);
+    $('calEta').textContent=(j.eta_s!=null&&j.eta_s>0)?j.eta_s+' s':'—';
+    $('calOff').textContent=(j.offset_ma!=null)?j.offset_ma.toFixed(2):'—';
+    $('calSet').textContent=(j.duty_set!=null&&j.duty_set>0)?j.duty_set.toFixed(1):'—';
+    $('calSaved').textContent=j.saved?'сохранено':'';
+    $('calBar').style.width=(j.progress||0)+'%';
+    $('calLive').textContent='duty '+(j.duty!=null?j.duty.toFixed(1):'—')+'% | ток '+(j.ma!=null?j.ma.toFixed(2):'—')+' mA/сег';
+  }).catch(()=>{});
+}
+/* живой список точек: досписывание по мере поступления */
+let liveN=0,liveState='';
+function pollPoints(){
+  jget('/api/calib/result').then(j=>{
+    const cv=j.curve||[];const st=$('calState').textContent;
+    if(st!==liveState||cv.length<liveN){$('calLivePts').textContent='';liveN=0;liveState=st;}
+    if(st!=='idle'&&st!=='done')$('calLivePts').classList.remove('hide');
+    if(cv.length>liveN){
+      let add='';for(let i=liveN;i<cv.length;i++)add+='d='+cv[i].d+'  i='+cv[i].i+'\n';
+      $('calLivePts').textContent+=add;liveN=cv.length;
+      const pre=$('calLivePts');pre.scrollTop=pre.scrollHeight;
+    }
+  }).catch(()=>{});
+}
+setInterval(()=>{if(!$('cal').classList.contains('hide')){pollCal();pollPoints();}},1000);
+$('calStart').onclick=()=>jpost('/api/calib/start',{target_ma:+$('pTarget').value,i_min_ma:+$('pImin').value,
+  coarse_step:+$('pCoarse').value,fine_step:+$('pFine').value,coarse_settle_ms:+$('pCSet').value,
+  coarse_accum_ms:+$('pCAcc').value,fine_settle_ms:+$('pFSet').value,fine_accum_ms:+$('pFAcc').value,
+  i_set_ma:+$('pISet').value}).then(j=>{if(j.status&&j.status!=='ok')alert('Старт: '+j.status);
+  liveN=0;liveState='';$('calLivePts').textContent='';pollCal();});
+$('calPause').onclick=()=>jpost('/api/calib/cmd',{cmd:'pause'}).then(pollCal);
+$('calResume').onclick=()=>jpost('/api/calib/cmd',{cmd:'resume'}).then(pollCal);
+$('calAbort').onclick=()=>jpost('/api/calib/cmd',{cmd:'abort'}).then(pollCal);
+$('calResult').onclick=()=>jget('/api/calib/result').then(j=>{
+  const f=v=>'<span class="'+(v?'ok':'err')+'">'+v+'</span>';
+  $('calFlags').innerHTML='valid='+f(j.valid)+' saved='+f(j.saved)+
+    ' i_max='+(j.i_max_ma!=null?j.i_max_ma.toFixed(2):'—')+' мА/сег'+
+    ' duty_lo='+(j.duty_lo!=null?j.duty_lo.toFixed(2):'—')+
+    ' duty_hi='+(j.duty_hi!=null?j.duty_hi.toFixed(2):'—')+
+    ' duty_set='+(j.duty_set!=null?j.duty_set.toFixed(2):'—');
+  let t='curve:\n';(j.curve||[]).forEach(p=>{t+='d='+p.d+'  i='+p.i+'\n';});
+  $('calOut').textContent=t;$('calOut').classList.remove('hide');
+}).catch(()=>alert('Нет результата'));
+$('calSave').onclick=()=>jpost('/api/calib/save',{label:$('calLabel').value}).then(j=>{if(j.status&&j.status!=='ok')alert('Сохранение: '+j.status);loadCal();});
+$('calApply').onclick=()=>jpost('/api/calib/apply',{label:$('calLabel').value}).then(j=>{if(j.status&&j.status!=='ok')alert('Применить: '+j.status);loadCal();});
+function loadCal(){
+  jget('/api/calib/list').then(a=>{
+    const tb=$('calTbl');tb.innerHTML='';
+    (a||[]).forEach(f=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td>'+f.name+'</td><td>'+f.size+'</td><td></td>';const td=tr.children[2];
+      const ba=document.createElement('button');ba.textContent='актив.';ba.onclick=()=>jpost('/api/calib/load',{file:f.name}).then(loadCal);td.appendChild(ba);
+      const bd=document.createElement('button');bd.textContent='удал.';bd.onclick=()=>{if(confirm('Удалить '+f.name+' ?'))jpost('/api/calib/delete',{file:f.name}).then(loadCal);};td.appendChild(bd);
+      tb.appendChild(tr);
+    });
+    if(!(a||[]).length)tb.innerHTML='<tr><td colspan="3" class="mut">пусто</td></tr>';
+  }).catch(()=>{});
+}
+$('calList').onclick=loadCal;
+
+/* ---------- Яркость ---------- */
+/* FIX: trim-поля заполняются ТОЛЬКО по событию (fill=true), тик их не трогает */
+function fillBright(j){
+  setVal('bLuxMin',j.lux_min);setVal('bLuxMax',j.lux_max);
+  setVal('bMaMin',j.ma_min);setVal('bMaMax',j.ma_max);
+  if(document.activeElement!==$('bGamma')){$('bGamma').value=j.gamma;}
+  $('bGammaVal').textContent=(+j.gamma).toFixed(2);
+  setVal('bPct',j.manual_pct);$('bPctVal').textContent=j.manual_pct+'%';
+}
+function pollBright(fill){
+  jget('/api/bright').then(j=>{
+    $('bAuto').classList.toggle('pri',j.mode===0);
+    $('bMan').classList.toggle('pri',j.mode===1);
+    $('bState').textContent=j.mode?'MANUAL':'AUTO';
+    $('bLive').textContent='lux '+(j.lux_valid?j.lux.toFixed(1):'—')+' | цель '+j.target_ma.toFixed(2)+' мА/сег | duty '+j.duty.toFixed(1)+'% | hw '+j.hw_percent+'% | кривая '+(j.curve_loaded?('да ('+j.curve_n+')'):'НЕТ');
+    if(fill)fillBright(j);
+  }).catch(()=>{$('bLive').textContent='API яркости недоступно (нужна прошивка ≥3.6.0)';});
+}
+setInterval(()=>{if(!$('bright').classList.contains('hide'))pollBright(false);},2000);
+$('bGamma').oninput=e=>$('bGammaVal').textContent=(+e.target.value).toFixed(2);
+$('bPct').oninput=e=>$('bPctVal').textContent=e.target.value+'%';
+$('bAuto').onclick=()=>jpost('/api/bright/mode',{mode:0}).then(()=>pollBright(true));
+$('bMan').onclick=()=>jpost('/api/bright/mode',{mode:1}).then(()=>pollBright(true));
+$('bPctApply').onclick=()=>jpost('/api/bright/manual',{pct:+$('bPct').value}).then(()=>pollBright(false));
+$('bSave').onclick=()=>jpost('/api/bright/params',{lux_min:+$('bLuxMin').value,lux_max:+$('bLuxMax').value,
+  ma_min:+$('bMaMin').value,ma_max:+$('bMaMax').value,gamma:+$('bGamma').value}).then(()=>pollBright(true));
+$('bReload').onclick=()=>jpost('/api/bright/reload',{}).then(()=>pollBright(true));
+</script>
+</body>
+</html>
