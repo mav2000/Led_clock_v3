@@ -39,6 +39,7 @@ pre{background:#0c1116;padding:10px;border-radius:8px;max-height:280px;overflow:
 <button data-t="sys">Система</button>
 <button data-t="cal">Калибровка</button>
 <button data-t="bright">Яркость</button>
+<button data-t="sync">Синхронизация</button>
 </nav>
 <main>
 
@@ -125,6 +126,33 @@ pre{background:#0c1116;padding:10px;border-radius:8px;max-height:280px;overflow:
 <div class="row"><button class="pri" id="bSave">Сохранить трим</button><button id="bReload">Перечитать кривую</button></div>
 <div class="row mut">gamma=1 — кривая точно через опорные точки; &gt;1 — круче, &lt;1 — положе. Потолок тока — автоматический (0% ШИМ или target кривой).</div>
 </section>
+<section id="sync" class="hide">
+<h2>Синхронизация времени</h2>
+<div class="row">
+  <span>Время: <b id="sTime">—</b></span>
+  <span>Фаза: <b id="sPhase">—</b> мс</span>
+  <span>Ресинк: <b id="sRun">—</b></span>
+  <span>NTP: <b id="sNtpOk">—</b></span>
+</div>
+<div class="row mut" id="sStats"></div>
+<h3>Периодичность и время</h3>
+<div class="row">
+  <label>NTP чч <input id="sNh" type="number" min="0" max="23" value="4"></label>
+  <label>мм <input id="sNm" type="number" min="0" max="59" value="55"></label>
+  <label>период, мин <input id="sNe" type="number" min="0" value="0"></label>
+</div>
+<div class="row">
+  <label>Ресинк чч <input id="sRh" type="number" min="0" max="23" value="5"></label>
+  <label>мм <input id="sRm" type="number" min="0" max="59" value="0"></label>
+  <label>период, мин <input id="sRe" type="number" min="0" value="0"></label>
+  <button class="pri" id="sCfgSave">Сохранить</button>
+</div>
+<div class="row">
+  <button class="pri" id="sNtpNow">NTP сейчас</button>
+  <button class="pri" id="sResyncNow">Ресинк дисплея</button>
+</div>
+<div class="mut">Если прошивка без /api/sync — поля остаются «—».</div>
+</section>
 
 </main>
 <script>
@@ -136,14 +164,17 @@ const jpost=(u,o)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/j
 function setVal(id,v){const el=$(id);if(el&&document.activeElement!==el)el.value=v;}
 let curDir='/';
 
+
 function showTab(t){
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
-  ['ctl','wifi','files','sys','cal','bright'].forEach(id=>$(id).classList.toggle('hide',id!==t));
+  ['ctl','wifi','files','sys','cal','bright','sync'].forEach(id=>$(id).classList.toggle('hide',id!==t));
   if(t==='files')loadFiles(curDir);
   if(t==='sys')pollSys();
   if(t==='cal'){pollCal();pollPoints();loadCal();}
   if(t==='bright')pollBright(true);
+  if(t==='sync')pollSync();
 }
+
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.t));
 
 /* ---------- Управление ---------- */
@@ -375,6 +406,53 @@ $('bPctApply').onclick=()=>jpost('/api/bright/manual',{pct:+$('bPct').value}).th
 $('bSave').onclick=()=>jpost('/api/bright/params',{lux_min:+$('bLuxMin').value,lux_max:+$('bLuxMax').value,
   ma_min:+$('bMaMin').value,ma_max:+$('bMaMax').value,gamma:+$('bGamma').value}).then(()=>pollBright(true));
 $('bReload').onclick=()=>jpost('/api/bright/reload',{}).then(()=>pollBright(true));
+
+/* ---------- Синхронизация (FIX 1.3.1) ---------- */
+function fmtEpoch(e){
+  if(!e||e<100000)return '—';
+  const d=new Date(e*1000);
+  return d.toLocaleString('ru-RU');
+}
+function pollSync(){
+  jget('/api/sync').then(j=>{
+    $('sTime').textContent=j.time||'—';
+    $('sPhase').textContent=j.phase_ms!=null?j.phase_ms:'—';
+    $('sRun').textContent=j.resync_running?'идёт':'ожидание';
+    $('sNtpOk').textContent=j.ntp_ok?'ок':'нет';
+    $('sStats').textContent=
+      'NTP попыток: '+(j.ntp_count||0)+
+      ' | посл. NTP: '+fmtEpoch(j.ntp_last_epoch)+
+      ' | коррекция: '+(j.ntp_last_corr!=null?(+j.ntp_last_corr).toFixed(2):'—')+' с'+
+      ' | ресинков: '+(j.resync_count||0)+
+      ' | посл. ресинк: '+fmtEpoch(j.resync_last_epoch)+
+      ' | фаза: '+(j.resync_last_phase!=null?j.resync_last_phase:'—')+' мс'+
+      (j.startup_done?'':' | startup-retry: '+(j.startup_retry_n||0));
+    if(j.ntp_hour!==undefined) setVal('sNh',j.ntp_hour);
+    if(j.ntp_min!==undefined)  setVal('sNm',j.ntp_min);
+    if(j.ntp_every_min!==undefined) setVal('sNe',j.ntp_every_min);
+    if(j.resync_hour!==undefined) setVal('sRh',j.resync_hour);
+    if(j.resync_min!==undefined)  setVal('sRm',j.resync_min);
+    if(j.resync_every_min!==undefined) setVal('sRe',j.resync_every_min);
+  }).catch(()=>{
+    $('sStats').textContent='эндпоинт /api/sync недоступен в этой прошивке';
+  });
+}
+setInterval(()=>{if(!$('sync').classList.contains('hide'))pollSync();},2000);
+$('sCfgSave').onclick=()=>jpost('/api/sync/cfg',{
+  ntp_hour:+$('sNh').value, ntp_min:+$('sNm').value, ntp_every_min:+$('sNe').value,
+  resync_hour:+$('sRh').value, resync_min:+$('sRm').value, resync_every_min:+$('sRe').value
+}).then(j=>{
+  if(j.status==='ok'){alert('Сохранено');pollSync();}
+  else alert('Ошибка: '+(j.status||'?'));
+}).catch(()=>alert('Ошибка связи'));
+$('sNtpNow').onclick=()=>jpost('/api/sync/ntp',{}).then(j=>{
+  if(j.status==='ok')setTimeout(pollSync,2000);
+  else alert('NTP: '+(j.status||'fail'));
+}).catch(()=>alert('Ошибка связи'));
+$('sResyncNow').onclick=()=>jpost('/api/sync/resync',{}).then(j=>{
+  if(j.status==='ok')setTimeout(pollSync,2000);
+  else alert('Ресинк: '+(j.status||'fail'));
+}).catch(()=>alert('Ошибка связи'));
 </script>
 </body>
 </html>

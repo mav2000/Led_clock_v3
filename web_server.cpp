@@ -34,6 +34,12 @@ Fix 1.3.0: подключена авто-яркость к вебу:
 #include "calibration.h"
 #include "fallback_html.h"
 
+// --- SYNC API (FIX 1.3.1) ---
+static void hSync();
+static void hSyncCfg();
+static void hSyncNtp();
+static void hSyncResync();
+
 static WebServer server(80);
 static File upFile;
 static String upDir = "/";
@@ -133,6 +139,24 @@ static void hSysinfo() {
   doc["bright_target_ma"] = bs.target_ma;
   doc["bright_duty"] = bs.duty;
   doc["bright_curve"] = bs.curve_loaded;
+    // --- SYNC (FIX 1.3.1) ---
+  SyncCfg  sc = clockSyncCfgGet();
+  SyncStats ss = clockSyncStats();
+  doc["sync_ntp_hour"]      = sc.ntp_hour;
+  doc["sync_ntp_min"]       = sc.ntp_min;
+  doc["sync_ntp_every_min"] = sc.ntp_every_min;
+  doc["sync_resync_hour"]   = sc.resync_hour;
+  doc["sync_resync_min"]    = sc.resync_min;
+  doc["sync_resync_every_min"] = sc.resync_every_min;
+  doc["sync_ntp_ok"]        = ss.ntp_ok;
+  doc["sync_ntp_count"]     = ss.ntp_count;
+  doc["sync_ntp_last_epoch"]= ss.ntp_last_epoch;
+  doc["sync_ntp_last_corr"] = ss.ntp_last_corr;
+  doc["sync_resync_count"]  = ss.resync_count;
+  doc["sync_resync_last_epoch"] = ss.resync_last_epoch;
+  doc["sync_resync_last_phase"] = ss.resync_last_phase;
+  doc["sync_startup_retry_n"]   = ss.startup_retry_n;
+  doc["sync_startup_done"]      = ss.startup_done;
   if (have) {
     doc["digit_seg"] = dmDigitSegments(t.tm_hour, t.tm_min, t.tm_sec);
     doc["eff_seg"]   = dmEffectiveSegments(t.tm_hour, t.tm_min, t.tm_sec);
@@ -544,7 +568,56 @@ static void hCalibDelete() {
   LOG("CAL", "Профиль удалён: %s", path.c_str());
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
-
+// --- SYNC API (FIX 1.3.1) ---
+static void hSync() {
+  JsonDocument doc;
+  struct tm t;
+  bool have = getLocalTime(&t);
+  doc["time"] = have ? nowStr() : "no sync";
+  doc["phase_ms"] = clockSyncPhaseOffsetMs();
+  doc["resync_running"] = clockSyncResyncRunning();
+  SyncCfg sc = clockSyncCfgGet();
+  doc["ntp_hour"] = sc.ntp_hour;
+  doc["ntp_min"]  = sc.ntp_min;
+  doc["ntp_every_min"] = sc.ntp_every_min;
+  doc["resync_hour"] = sc.resync_hour;
+  doc["resync_min"]  = sc.resync_min;
+  doc["resync_every_min"] = sc.resync_every_min;
+  SyncStats ss = clockSyncStats();
+  doc["ntp_ok"] = ss.ntp_ok;
+  doc["ntp_count"] = ss.ntp_count;
+  doc["ntp_last_epoch"] = ss.ntp_last_epoch;
+  doc["ntp_last_corr"] = ss.ntp_last_corr;
+  doc["resync_count"] = ss.resync_count;
+  doc["resync_last_epoch"] = ss.resync_last_epoch;
+  doc["resync_last_phase"] = ss.resync_last_phase;
+  doc["startup_retry_n"] = ss.startup_retry_n;
+  doc["startup_done"] = ss.startup_done;
+  String res; serializeJson(doc, res);
+  server.send(200, "application/json", res);
+}
+static void hSyncCfg() {
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
+  JsonDocument nd;
+  if (deserializeJson(nd, server.arg("plain"))) { server.send(400, "text/plain", "bad json"); return; }
+  SyncCfg c = clockSyncCfgGet();
+  c.ntp_hour       = (uint8_t)(nd["ntp_hour"]       | c.ntp_hour);
+  c.ntp_min        = (uint8_t)(nd["ntp_min"]        | c.ntp_min);
+  c.ntp_every_min  = (uint16_t)(nd["ntp_every_min"] | (int)c.ntp_every_min);
+  c.resync_hour    = (uint8_t)(nd["resync_hour"]    | c.resync_hour);
+  c.resync_min     = (uint8_t)(nd["resync_min"]     | c.resync_min);
+  c.resync_every_min = (uint16_t)(nd["resync_every_min"] | (int)c.resync_every_min);
+  bool ok = clockSyncCfgSet(c);
+  server.send(200, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"status\":\"fail\"}");
+}
+static void hSyncNtp() {
+  bool ok = clockSyncForceNtp();
+  server.send(200, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"status\":\"fail\"}");
+}
+static void hSyncResync() {
+  bool ok = clockSyncForceResync();
+  server.send(200, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"status\":\"fail\"}");
+}
 static void hNotFound() {
   if (wifiMgrIsAp()) { server.sendHeader("Location", "http://192.168.4.1/", true); server.send(302, "text/plain", ""); }
   else server.send(404, "text/plain", "Not found");
@@ -576,6 +649,10 @@ void webServerInit() {
   server.on("/api/bright/manual",  HTTP_POST, hBrightManual);
   server.on("/api/bright/params",  HTTP_POST, hBrightParams);
   server.on("/api/bright/reload",  HTTP_POST, hBrightReload);
+    server.on("/api/sync",         HTTP_GET,  hSync);         // FIX 1.3.1
+  server.on("/api/sync/cfg",     HTTP_POST, hSyncCfg);      // FIX 1.3.1
+  server.on("/api/sync/ntp",     HTTP_POST, hSyncNtp);      // FIX 1.3.1
+  server.on("/api/sync/resync",  HTTP_POST, hSyncResync);   // FIX 1.3.1
   server.on("/api/calib/start",  HTTP_POST, hCalibStart);
   server.on("/api/calib/status", HTTP_GET,  hCalibStatus);
   server.on("/api/calib/cmd",    HTTP_POST, hCalibCmd);
