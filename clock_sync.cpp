@@ -42,8 +42,8 @@ static SyncCfg syncCfg = {
     .resync_min = 0,
     .resync_every_min = 0,
     .rtc_write_interval_ms = 86400000UL,
-    .phase_warn_ms = 200,
-    .phase_resync_ms = 300,
+    .phase_warn_ms = 400,
+    .phase_resync_ms = 500,
     .auto_resync = true
 };
 
