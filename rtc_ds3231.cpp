@@ -1,11 +1,12 @@
 /*
- * File: rtc_ds3231.cpp | Module: RTC | File ver: 1.1.5 | Proj ver: 3.5.1
- * Fix 1.1.5: возвращена TZ-компенсация в initRTC():
- *            epoch = mktime(rtc_local) - tz  (иначе на старте время съезжает на TZ
- *            до прихода NTP -> регресс "+25199 с").
+ * File: rtc_ds3231.cpp | Module: RTC | File ver: 1.2.1 | Proj ver: 3.6.0
+ * Fix 1.2.1: Реализована собственная функция mktime_utc() вместо системной timegm(),
+ *            которая может быть недоступна в некоторых версиях ESP32 Arduino Core.
+ *            Функция потокобезопасна и не зависит от переменной окружения TZ.
  */
 #include <Arduino.h>
 #include <Wire.h>
+#include <time.h>
 #include "rtc_ds3231.h"
 #include "board_config.h"
 #include "config_store.h"
@@ -17,6 +18,24 @@ static bool found = false;
 
 static uint8_t b2d(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
 static uint8_t d2b(uint8_t v) { return (v / 10 << 4) | (v % 10); }
+
+// Реализация mktime для UTC без использования системной timegm()
+time_t mktime_utc(const struct tm *t) {
+    int year = t->tm_year + 1900;
+    int month = t->tm_mon + 1; // 1..12
+    int day = t->tm_mday;
+    
+    // Алгоритм вычисления юлианского дня (Julian Day Number)
+    int a = (14 - month) / 12;
+    int y = year + 4800 - a;
+    int m = month + 12 * a - 3;
+    int jdn = day + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045;
+    
+    // Количество дней с эпохи Unix (1970-01-01)
+    int days = jdn - 2440588;
+    
+    return (time_t)((int64_t)days * 86400LL + t->tm_hour * 3600LL + t->tm_min * 60LL + t->tm_sec);
+}
 
 bool rtcBegin() {
   Wire.begin(PIN_SDA, PIN_SCL, 100000);
@@ -45,19 +64,25 @@ bool rtcReadTime(struct tm& t) {
   t.tm_mday = b2d(Wire.read() & 0x3F);
   t.tm_mon  = b2d(Wire.read() & 0x1F) - 1;
   t.tm_year = b2d(Wire.read()) + 100;
+  t.tm_isdst = 0; // UTC не имеет летнего времени
   return true;
 }
 
-void rtcWriteTime(struct tm& t) {   // пишем ЛОКАЛЬНОЕ время
+void rtcWriteTime(struct tm& t_local) {
+  // Конвертируем LOCAL в UTC для записи в RTC
+  time_t epoch_local = mktime(&t_local);
+  struct tm t_utc;
+  gmtime_r(&epoch_local, &t_utc);
+
   Wire.beginTransmission(DS3231_ADDR);
   Wire.write(0x00);
-  Wire.write(d2b(t.tm_sec));
-  Wire.write(d2b(t.tm_min));
-  Wire.write(d2b(t.tm_hour));
-  Wire.write(d2b(t.tm_wday == 0 ? 7 : t.tm_wday));
-  Wire.write(d2b(t.tm_mday));
-  Wire.write(d2b(t.tm_mon + 1));
-  Wire.write(d2b(t.tm_year - 100));
+  Wire.write(d2b(t_utc.tm_sec));
+  Wire.write(d2b(t_utc.tm_min));
+  Wire.write(d2b(t_utc.tm_hour));
+  Wire.write(d2b(t_utc.tm_wday == 0 ? 7 : t_utc.tm_wday));
+  Wire.write(d2b(t_utc.tm_mday));
+  Wire.write(d2b(t_utc.tm_mon + 1));
+  Wire.write(d2b(t_utc.tm_year - 100));
   Wire.endTransmission();
 }
 
@@ -79,15 +104,14 @@ void initRTC() {
   found = true;
   LOG("RTC", "DS3231 найден");
 
-  struct tm t;
-  if (!rtcReadTime(t)) { LOG("RTC", "Ошибка чтения времени"); return; }
-  if (t.tm_year < 124) { LOG("RTC", "Время в модуле не установлено"); return; }
+  struct tm t_utc;
+  if (!rtcReadTime(t_utc)) { LOG("RTC", "Ошибка чтения времени"); return; }
+  if (t_utc.tm_year < 124) { LOG("RTC", "Время в модуле не установлено"); return; }
 
-  // RTC хранит LOCAL -> epoch = mktime(local) - tz  (FIX 1.1.5)
-  long tz = (long)(configTimezone() * 3600);
+  // RTC хранит UTC -> используем нашу реализацию mktime_utc()
   struct timeval tv;
-  tv.tv_sec  = mktime(&t) - tz;
+  tv.tv_sec  = mktime_utc(&t_utc);
   tv.tv_usec = 0;
   settimeofday(&tv, NULL);
-  LOG("RTC", "Системное время из RTC (local, TZ-компенсация %ld с)", tz);
+  LOG("RTC", "Системное время из RTC (UTC) установлено успешно");
 }

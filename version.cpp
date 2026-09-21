@@ -20,3 +20,4 @@ const ModuleVersion MODULE_VERSIONS[] = {
 };
 const int MODULE_VERSIONS_COUNT = sizeof(MODULE_VERSIONS)/sizeof(MODULE_VERSIONS[0]);
 const char* projectVersion(){ return PROJECT_VERSION; }
+
