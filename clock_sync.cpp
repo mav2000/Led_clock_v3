@@ -1,7 +1,8 @@
 /*
- * File: clock_sync.cpp | Module: CSYNC | File ver: 1.5.1 | Proj ver: 3.6.0
- * Fix 1.5.1: Добавлено поле resync_count в SyncStats и его инкремент в csStart().
- *            Исправлены все ошибки компиляции с веб-интерфейсом.
+ * File: clock_sync.cpp | Module: CSYNC | File ver: 1.6.0 | Proj ver: 3.6.0
+ * Fix 1.6.0: После холодного старта всегда запрашивается ресинк дисплея,
+ *            так как аппаратные счётчики не знают системного времени.
+ *            Исправлена проблема, когда дисплей показывал 00:00:00 после старта.
  */
 #include <Arduino.h>
 #include <time.h>
@@ -42,8 +43,8 @@ static SyncCfg syncCfg = {
     .resync_min = 0,
     .resync_every_min = 0,
     .rtc_write_interval_ms = 86400000UL,
-    .phase_warn_ms = 400,
-    .phase_resync_ms = 500,
+    .phase_warn_ms = 200,
+    .phase_resync_ms = 300,
     .auto_resync = true
 };
 
@@ -147,6 +148,14 @@ void clockSyncStartup() {
   startupChecked = false; 
   lastPhaseCheck = 0; 
   lastStartupRetry = millis();
+  
+  // ИСПРАВЛЕНО: После холодного старта всегда синхронизируем дисплей
+  // Аппаратные счётчики (CD4518) не знают системного времени после сброса питания
+  if (syncCfg.auto_resync) {
+    LOG("CSYNC", "Холодный старт -> принудительный ресинк дисплея");
+    clockSyncRequestResync();
+  }
+  
   phaseCheck(); 
 }
 
